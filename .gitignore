@@ -1,0 +1,22 @@
+# Sensitive environment variables
+.env
+.env.*
+!.env.example
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+bot_data.db
+
+# Python cache & virtualenv
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+ENV/
+env/
+
+# OS metadata
+.DS_Store
+Thumbs.db

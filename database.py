@@ -19,7 +19,7 @@ class Database:
         self.db_path = db_path
 
     async def init_db(self):
-        """Создание таблиц базы данных."""
+        """Создание и авто-миграция таблиц базы данных."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -33,6 +33,13 @@ class Database:
                 )
                 """
             )
+
+            # Проверка наличие колонки check_interval для существующих БД
+            async with db.execute("PRAGMA table_info(user_settings)") as cursor:
+                columns = [row[1] for row in await cursor.fetchall()]
+                if "check_interval" not in columns:
+                    await db.execute("ALTER TABLE user_settings ADD COLUMN check_interval INTEGER DEFAULT 120")
+
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sent_numbers (
@@ -69,7 +76,7 @@ class Database:
                         "custom_patterns": json.loads(row[4] or "[]"),
                     }
 
-            # Настройки по умолчанию для нового пользователя (чистый список шаблонов)
+            # Настройки по умолчанию для нового пользователя
             default_categories = [1, 111, 109, 108, 107, 106, 105, 104]
             default_interval = 120
             default_patterns: List[str] = []
@@ -146,7 +153,6 @@ class Database:
         await self.save_settings(user_id, settings)
 
     async def set_check_interval(self, user_id: int, interval_seconds: int):
-        """Устанавливает интервал проверки (в секундах)."""
         settings = await self.get_settings(user_id)
         settings["check_interval"] = max(10, interval_seconds)
         await self.save_settings(user_id, settings)
@@ -228,7 +234,6 @@ class Database:
         await self.save_settings(user_id, settings)
 
     async def clear_all_patterns(self, user_id: int):
-        """Полная очистка всех шаблонов пользователя."""
         settings = await self.get_settings(user_id)
         settings["custom_patterns"] = []
         settings["enabled_patterns"] = []

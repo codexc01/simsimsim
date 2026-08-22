@@ -1,6 +1,6 @@
 """
-Модуль асинхронного взаимодействия с SQLite.
-Хранение настроек пользователей, интервала проверки и отправленных номеров.
+Модуль работы с SQLite базами данных.
+Оптимизирован с помощью WAL режима, кэширования и индексов.
 """
 
 from datetime import datetime
@@ -19,8 +19,14 @@ class Database:
         self.db_path = db_path
 
     async def init_db(self):
-        """Создание и авто-миграция таблиц базы данных."""
+        """Инициализация базы данных, включение WAL и создание индексов."""
         async with aiosqlite.connect(self.db_path) as db:
+            # Настройки быстродействия и минимального потребления памяти
+            await db.execute("PRAGMA journal_mode = WAL;")
+            await db.execute("PRAGMA synchronous = NORMAL;")
+            await db.execute("PRAGMA temp_store = MEMORY;")
+            await db.execute("PRAGMA cache_size = -2000;")
+
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_settings (
@@ -34,7 +40,7 @@ class Database:
                 """
             )
 
-            # Проверка наличие колонки check_interval для существующих БД
+            # Миграция структуры
             async with db.execute("PRAGMA table_info(user_settings)") as cursor:
                 columns = [row[1] for row in await cursor.fetchall()]
                 if "check_interval" not in columns:
@@ -56,10 +62,14 @@ class Database:
                 )
                 """
             )
+
+            # Индексы для мгновенного поиска
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_sent_active ON sent_numbers(is_active);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_sent_user_raw ON sent_numbers(user_id, raw_number);")
+
             await db.commit()
 
     async def get_settings(self, user_id: int) -> Dict[str, Any]:
-        """Получает настройки пользователя. Если их нет — создаёт дефолтные."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT is_monitoring, check_interval, enabled_categories, enabled_patterns, custom_patterns FROM user_settings WHERE user_id = ?",
@@ -76,7 +86,6 @@ class Database:
                         "custom_patterns": json.loads(row[4] or "[]"),
                     }
 
-            # Настройки по умолчанию для нового пользователя
             default_categories = [1, 111, 109, 108, 107, 106, 105, 104]
             default_interval = 120
             default_patterns: List[str] = []
@@ -109,7 +118,6 @@ class Database:
             }
 
     async def get_all_active_users(self) -> List[Dict[str, Any]]:
-        """Возвращает список всех активных пользователей с включённым мониторингом."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT user_id, is_monitoring, check_interval, enabled_categories, enabled_patterns, custom_patterns FROM user_settings WHERE is_monitoring = 1"
@@ -128,7 +136,6 @@ class Database:
                 return result
 
     async def save_settings(self, user_id: int, settings: Dict[str, Any]):
-        """Сохраняет настройки пользователя."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -289,17 +296,15 @@ class Database:
 
             disappeared = active_in_db - currently_available_raw
             if disappeared:
-                for raw_num in disappeared:
-                    await db.execute(
-                        "UPDATE sent_numbers SET is_active = 0 WHERE raw_number = ?",
-                        (raw_num,),
-                    )
+                await db.executemany(
+                    "UPDATE sent_numbers SET is_active = 0 WHERE raw_number = ?",
+                    [(raw_num,) for raw_num in disappeared],
+                )
 
             if currently_available_raw:
-                for raw_num in currently_available_raw:
-                    await db.execute(
-                        "UPDATE sent_numbers SET last_seen_at = ?, is_active = 1 WHERE raw_number = ?",
-                        (now, raw_num),
-                    )
+                await db.executemany(
+                    "UPDATE sent_numbers SET last_seen_at = ?, is_active = 1 WHERE raw_number = ?",
+                    [(now, raw_num) for raw_num in currently_available_raw],
+                )
 
             await db.commit()

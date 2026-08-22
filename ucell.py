@@ -1,5 +1,6 @@
 """
 Ucell API Module for fetching available phone numbers.
+Optimized for high performance and minimal memory footprint.
 """
 
 from dataclasses import dataclass
@@ -12,6 +13,9 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 API_URL = "https://cw-corn00.ucell.uz/api/v1/phone_number/search-mask"
+
+# Предкомпилированные регулярные выражения для максимального ускорения
+RE_DIGITS = re.compile(r"\D")
 
 CATEGORIES: Dict[int, Dict[str, Any]] = {
     1: {"name": "Simple", "price_text": "0 сум", "price": 0},
@@ -40,36 +44,17 @@ class UcellNumber:
     price: int            # E.g. 0
     price_text: str       # E.g. "0 сум"
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "msisdn_id": self.msisdn_id,
-            "raw_number": self.raw_number,
-            "formatted_number": self.formatted_number,
-            "category_id": self.category_id,
-            "category_name": self.category_name,
-            "price": self.price,
-            "price_text": self.price_text,
-        }
-
 
 def normalize_number(phone_str: str) -> Tuple[str, str]:
-    """
-    Extracts raw digits and returns (raw_number, formatted_number).
-    Example input: "998 50 1527854" or "998501527854"
-    Returns: ("998501527854", "+998 50 152 78 54")
-    """
-    digits = re.sub(r"\D", "", phone_str)
+    """Быстрая нормализация номера в цифры и красивый формат."""
+    digits = RE_DIGITS.sub("", phone_str)
     if digits.startswith("80") and len(digits) == 11:
         digits = "998" + digits[1:]
     elif not digits.startswith("998") and len(digits) == 9:
         digits = "998" + digits
 
     if len(digits) == 12 and digits.startswith("998"):
-        code = digits[3:5]
-        part1 = digits[5:8]
-        part2 = digits[8:10]
-        part3 = digits[10:12]
-        formatted = f"+998 {code} {part1} {part2} {part3}"
+        formatted = f"+998 {digits[3:5]} {digits[5:8]} {digits[8:10]} {digits[10:12]}"
     else:
         formatted = f"+{digits}" if digits else phone_str
 
@@ -77,7 +62,7 @@ def normalize_number(phone_str: str) -> Tuple[str, str]:
 
 
 class UcellClient:
-    """Async client for interacting with Ucell number reservation API."""
+    """Оптимизированный асинхронный клиент Ucell API с пулом соединений."""
 
     def __init__(self, session: Optional[aiohttp.ClientSession] = None):
         self._session = session
@@ -85,7 +70,9 @@ class UcellClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            connector = aiohttp.TCPConnector(limit=20, keepalive_timeout=30)
             self._session = aiohttp.ClientSession(
+                connector=connector,
                 headers={
                     "User-Agent": (
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -94,7 +81,7 @@ class UcellClient:
                     ),
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/plain, */*",
-                }
+                },
             )
             self._owns_session = True
         return self._session
@@ -108,12 +95,9 @@ class UcellClient:
         category_id: int = 0,
         page_num: int = 1,
         page_size: int = 100,
-        timeout: float = 10.0,
-        max_retries: int = 3,
+        timeout: float = 8.0,
+        max_retries: int = 2,
     ) -> List[UcellNumber]:
-        """
-        Fetches numbers from Ucell API for a specified category.
-        """
         session = await self._get_session()
         payload = {
             "pager": {"pageNum": page_num, "pageSize": page_size},
@@ -133,26 +117,31 @@ class UcellClient:
                     timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as response:
                     if response.status != 200:
-                        logger.warning(
-                            f"Ucell API returned HTTP {response.status} (attempt {attempt}/{max_retries})"
-                        )
                         if attempt == max_retries:
                             return []
-                        await asyncio.sleep(1.0 * attempt)
+                        await asyncio.sleep(0.5)
                         continue
 
                     data = await response.json()
                     items = data.get("data", [])
+                    if not items:
+                        return []
+
                     result = []
+                    cat_info = CATEGORIES.get(category_id, {})
+                    default_cat_name = cat_info.get("name", "Unknown")
+                    default_price = cat_info.get("price", 0)
+                    default_price_text = cat_info.get("price_text", "0 сум")
+
                     for item in items:
                         msisdn_id = item.get("msisdn_id", 0)
                         raw_input = item.get("msisdn") or item.get("phone_number", "")
                         raw_num, formatted_num = normalize_number(str(raw_input))
                         cat_id = item.get("msisdn_type", category_id)
-                        cat_info = CATEGORIES.get(cat_id, {})
-                        cat_name = item.get("type_name") or cat_info.get("name", "Unknown")
-                        price = item.get("price", cat_info.get("price", 0))
-                        price_text = item.get("price_text") or cat_info.get("price_text", "0 сум")
+
+                        cat_name = item.get("type_name") or default_cat_name
+                        price = item.get("price", default_price)
+                        price_text = item.get("price_text") or default_price_text
 
                         result.append(
                             UcellNumber(
@@ -166,10 +155,13 @@ class UcellClient:
                             )
                         )
                     return result
-            except (aiohttp.ClientError, asyncio.TimeoutError, Exception) as e:
-                logger.warning(f"Error fetching Ucell numbers (attempt {attempt}/{max_retries}): {e}")
+
+            except (aiohttp.ClientError, asyncio.TimeoutError):
                 if attempt == max_retries:
                     return []
-                await asyncio.sleep(1.0 * attempt)
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"Ошибка получения номеров Ucell: {e}")
+                return []
 
         return []

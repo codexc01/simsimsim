@@ -1,5 +1,6 @@
 """
 Telegram-бот для круглосуточного мониторинга доступных номеров Ucell.
+Поддержка встроенной нижней панели управления (ReplyKeyboard).
 """
 
 import asyncio
@@ -15,6 +16,8 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 
 import config
@@ -48,6 +51,16 @@ class SetIntervalState(StatesGroup):
 
 
 # --- Клавиатуры ---
+
+def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Постоянная нижняя панель управления внизу экрана Telegram."""
+    kb = [
+        [KeyboardButton(text="📡 Мониторинг"), KeyboardButton(text="💎 Категории")],
+        [KeyboardButton(text="🎯 Шаблоны"), KeyboardButton(text="⏱ Интервал")],
+        [KeyboardButton(text="📊 Статус")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
 
 def get_main_menu_keyboard(is_monitoring: bool, check_interval: int) -> InlineKeyboardMarkup:
     status_icon = "🟢 Активен" if is_monitoring else "🔴 На паузе"
@@ -125,37 +138,86 @@ def get_notification_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-# --- Команды ---
+# --- Команды и обработка нижней панели ---
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
     settings = await db.get_settings(user_id)
-    kb = get_main_menu_keyboard(settings["is_monitoring"], settings["check_interval"])
+    inline_kb = get_main_menu_keyboard(settings["is_monitoring"], settings["check_interval"])
+    reply_kb = get_main_reply_keyboard()
+
     await message.answer(
         "👋 **Мониторинг номеров Ucell**\n\n"
-        "Управляйте категориями, шаблонами и интервалом проверки с помощью меню ниже:",
-        reply_markup=kb,
+        "Панель управления закреплена внизу вашего экрана.\n"
+        "Используйте кнопки ниже для быстрой настройки:",
+        reply_markup=reply_kb,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    await message.answer(
+        "⚙️ **Меню настроек:**",
+        reply_markup=inline_kb,
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
+@router.message(F.text == "📡 Мониторинг")
+async def btn_toggle_monitoring(message: Message):
+    user_id = message.from_user.id
+    settings = await db.get_settings(user_id)
+    new_state = not settings["is_monitoring"]
+    await db.set_monitoring_state(user_id, new_state)
+
+    status_text = "возобновлён 🟢" if new_state else "приостановлен 🔴"
+    await message.answer(
+        f"📡 **Статус мониторинга:** {status_text}",
+        reply_markup=get_main_reply_keyboard(),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+@router.message(F.text == "💎 Категории")
 @router.message(Command("categories"))
 async def cmd_categories(message: Message):
     user_id = message.from_user.id
     settings = await db.get_settings(user_id)
     kb = get_categories_keyboard(settings["enabled_categories"])
-    await message.answer("💎 **Категории номеров:**", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    await message.answer(
+        "💎 **Категории номеров:**",
+        reply_markup=kb,
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
+@router.message(F.text == "🎯 Шаблоны")
 @router.message(Command("patterns"))
 async def cmd_patterns(message: Message):
     user_id = message.from_user.id
     settings = await db.get_settings(user_id)
     kb = get_patterns_keyboard(settings["enabled_patterns"], settings["custom_patterns"])
-    await message.answer("🎯 **Шаблоны номеров:**", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    await message.answer(
+        "🎯 **Шаблоны номеров:**\n"
+        "_Добавляйте свои шаблоны с буквами (XXX AA XX) и конкретными цифрами (777 AA XX, 555 12 34)._",
+        reply_markup=kb,
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
+@router.message(F.text == "⏱ Интервал")
+async def btn_interval(message: Message):
+    user_id = message.from_user.id
+    settings = await db.get_settings(user_id)
+    kb = get_interval_keyboard(settings["check_interval"])
+    await message.answer(
+        f"⏱ **Настройка интервала проверки:**\n\n"
+        f"Текущий интервал: **{settings['check_interval']} секунд**.\n"
+        "Выберите желаемый интервал из списка ниже или введите своё значение:",
+        reply_markup=kb,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+@router.message(F.text == "📊 Статус")
 @router.message(Command("status"))
 async def cmd_status(message: Message):
     user_id = message.from_user.id
@@ -172,7 +234,11 @@ async def cmd_status(message: Message):
         f"• **Включено категорий:** {cat_count} из {len(CATEGORIES)}\n"
         f"• **Активных шаблонов:** {pat_count}\n"
     )
-    await message.answer(msg_text, parse_mode=ParseMode.MARKDOWN)
+    await message.answer(
+        msg_text,
+        reply_markup=get_main_reply_keyboard(),
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 @router.message(Command("pause"))
@@ -459,7 +525,6 @@ async def monitoring_task(bot: Bot):
     logger.info("Запуск фоновой задачи мониторинга...")
     client = UcellClient()
 
-    # Отслеживание времени последней проверки для каждого пользователя
     last_user_checks: Dict[int, float] = {}
 
     while True:
@@ -467,7 +532,6 @@ async def monitoring_task(bot: Bot):
             active_users = await db.get_all_active_users()
             now = asyncio.get_event_loop().time()
 
-            # Фильтруем пользователей, у которых подошло время проверки
             due_users = []
             for user in active_users:
                 uid = user["user_id"]
@@ -477,7 +541,6 @@ async def monitoring_task(bot: Bot):
                     due_users.append(user)
 
             if due_users:
-                # Собираем все уникальные категории для запроса
                 all_needed_cats: Set[int] = set()
                 for user in due_users:
                     all_needed_cats.update(user.get("enabled_categories", []))
@@ -494,7 +557,6 @@ async def monitoring_task(bot: Bot):
 
                     await db.update_seen_numbers(all_available_raw)
 
-                    # Проверяем номера для каждого готового пользователя
                     for user in due_users:
                         user_id = user["user_id"]
                         last_user_checks[user_id] = now

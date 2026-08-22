@@ -1,6 +1,6 @@
 """
-Ucell API Module for fetching available phone numbers.
-Optimized for high performance and minimal memory footprint.
+ucell api module for fetching available phone numbers.
+optimized for high performance and minimal memory footprint.
 """
 
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 API_URL = "https://cw-corn00.ucell.uz/api/v1/phone_number/search-mask"
 
-# Предкомпилированные регулярные выражения для максимального ускорения
+# предкомпилированные регулярные выражения для максимального ускорения
 RE_DIGITS = re.compile(r"\D")
 
 CATEGORIES: Dict[int, Dict[str, Any]] = {
@@ -37,16 +37,16 @@ CATEGORIES: Dict[int, Dict[str, Any]] = {
 @dataclass
 class UcellNumber:
     msisdn_id: int
-    raw_number: str       # E.g. "998501527854"
-    formatted_number: str # E.g. "+998 50 152 78 54"
-    category_id: int      # E.g. 1
-    category_name: str    # E.g. "Simple"
-    price: int            # E.g. 0
-    price_text: str       # E.g. "0 сум"
+    raw_number: str       # e.g. "998501527854"
+    formatted_number: str # e.g. "+998 50 152 78 54"
+    category_id: int      # e.g. 1
+    category_name: str    # e.g. "Simple"
+    price: int            # e.g. 0
+    price_text: str       # e.g. "0 сум"
 
 
 def normalize_number(phone_str: str) -> Tuple[str, str]:
-    """Быстрая нормализация номера в цифры и красивый формат."""
+    """быстрая нормализация номера в цифры и красивый формат."""
     digits = RE_DIGITS.sub("", phone_str)
     if digits.startswith("80") and len(digits) == 11:
         digits = "998" + digits[1:]
@@ -62,7 +62,7 @@ def normalize_number(phone_str: str) -> Tuple[str, str]:
 
 
 class UcellClient:
-    """Оптимизированный асинхронный клиент Ucell API с пулом соединений."""
+    """оптимизированный асинхронный клиент ucell api с пулом соединений."""
 
     def __init__(self, session: Optional[aiohttp.ClientSession] = None):
         self._session = session
@@ -161,7 +161,7 @@ class UcellClient:
                     return []
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logger.warning(f"Ошибка получения номеров Ucell: {e}")
+                logger.warning(f"ошибка получения номеров ucell: {e}")
                 return []
 
         return []

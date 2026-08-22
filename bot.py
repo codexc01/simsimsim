@@ -1,6 +1,6 @@
 """
-Telegram-бот для круглосуточного мониторинга доступных номеров Ucell.
-Поддержка встроенной нижней панели управления (ReplyKeyboard).
+telegram-бот для круглосуточного мониторинга доступных номеров ucell.
+поддержка встроенной нижней панели управления (replykeyboard).
 """
 
 import asyncio
@@ -50,10 +50,10 @@ class SetIntervalState(StatesGroup):
     waiting_for_seconds = State()
 
 
-# --- Клавиатуры ---
+# клавиатуры
 
 def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Постоянная нижняя панель управления внизу экрана Telegram."""
+    """постоянная нижняя панель управления внизу экрана telegram."""
     kb = [
         [KeyboardButton(text="📡 Мониторинг"), KeyboardButton(text="💎 Категории")],
         [KeyboardButton(text="🎯 Шаблоны"), KeyboardButton(text="⏱ Интервал")],
@@ -138,7 +138,7 @@ def get_notification_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-# --- Команды и обработка нижней панели ---
+# команды и обработка нижней панели
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
@@ -253,7 +253,7 @@ async def cmd_resume(message: Message):
     await message.answer("▶️ Мониторинг возобновлён!")
 
 
-# --- Callback-обработчики ---
+# callback-обработчики
 
 @router.callback_query(F.data == "menu_main")
 async def cb_main(callback: CallbackQuery, state: FSMContext):
@@ -432,7 +432,7 @@ async def process_add_pattern(message: Message, state: FSMContext):
     )
 
 
-# --- Настройка интервала ---
+# настройка интервала
 
 @router.callback_query(F.data == "menu_interval")
 async def cb_menu_interval(callback: CallbackQuery):
@@ -519,7 +519,7 @@ async def cb_ignore(callback: CallbackQuery):
     await callback.answer()
 
 
-# --- Фоновая задача мониторинга ---
+# фоновая задача мониторинга
 
 async def monitoring_task(bot: Bot):
     logger.info("Запуск фоновой задачи мониторинга...")
@@ -606,7 +606,7 @@ async def monitoring_task(bot: Bot):
         await asyncio.sleep(10)
 
 
-# --- Точка входа ---
+# точка входа
 
 async def main():
     if not config.BOT_TOKEN:

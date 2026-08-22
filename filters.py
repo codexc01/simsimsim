@@ -1,6 +1,6 @@
 """
-Модуль фильтрации и проверки шаблонов номеров.
-Поддерживает точные цифры, буквы и смешанные комбинации.
+модуль фильтрации и проверки шаблонов номеров.
+поддерживает точные цифры, буквы и смешанные комбинации.
 """
 
 from dataclasses import dataclass
@@ -15,20 +15,20 @@ class MatchResult:
     reason: str = ""
 
 
-# По умолчанию список предустановленных шаблонов пуст,
+# по умолчанию список предустановленных шаблонов пуст,
 # чтобы пользователь мог сам задавать нужные правила.
 PRESET_PATTERNS: List[str] = []
 
 
 def clean_pattern_str(pattern: str) -> str:
-    """Удаляет пробелы и дефисы, приводит к верхнему регистру."""
+    """удаляет пробелы и дефисы, приводит к верхнему регистру."""
     return re.sub(r"[^A-Za-z0-9]", "", pattern).upper()
 
 
 def validate_pattern(pattern: str) -> bool:
     """
-    Проверяет корректность шаблона.
-    Может содержать буквы A-Z, цифры 0-9, пробелы и дефисы. Длина от 2 до 12 символов.
+    проверяет корректность шаблона.
+    может содержать буквы A-Z, цифры 0-9, пробелы и дефисы. Длина от 2 до 12 символов.
     """
     cleaned = clean_pattern_str(pattern)
     if not (2 <= len(cleaned) <= 12):
@@ -38,10 +38,10 @@ def validate_pattern(pattern: str) -> bool:
 
 def match_pattern_on_window(digits: str, clean_pattern: str) -> bool:
     """
-    Сравнивает цепочку цифр с очищенным шаблоном равной длины.
-    - Цифра в шаблоне должна точно совпадать с цифрой в номере.
-    - Одинаковые буквы обозначают одинаковые цифры.
-    - Разные буквы обозначают разные цифры.
+    сравнивает цепочку цифр с очищенным шаблоном равной длины.
+    - цифра в шаблоне должна точно совпадать с цифрой в номере.
+    - одинаковые буквы обозначают одинаковые цифры.
+    - разные буквы обозначают разные цифры.
     """
     if len(digits) != len(clean_pattern):
         return False
@@ -71,8 +71,8 @@ def match_pattern_on_window(digits: str, clean_pattern: str) -> bool:
 
 def match_pattern(phone_number: str, pattern: str) -> bool:
     """
-    Проверяет совпадение шаблона с номером телефона.
-    Учитывает 7-значный номер абонента и 9-значный номер с кодом оператора.
+    проверяет совпадение шаблона с номером телефона.
+    учитывает 7-значный номер абонента и 9-значный номер с кодом оператора.
     """
     clean_p = clean_pattern_str(pattern)
     if not clean_p:
@@ -94,24 +94,24 @@ def match_pattern(phone_number: str, pattern: str) -> bool:
 
     p_len = len(clean_p)
 
-    # Точное совпадение с 7-значным номером
+    # точное совпадение с 7-значным номером
     if p_len == len(sub_digits):
         if match_pattern_on_window(sub_digits, clean_p):
             return True
 
-    # Точное совпадение с 9-значным номером
+    # точное совпадение с 9-значным номером
     if p_len == len(nat_digits):
         if match_pattern_on_window(nat_digits, clean_p):
             return True
 
-    # Скользящее окно по 7-значному номеру (например, шаблоны из 3-6 символов)
+    # скользящее окно по 7-значному номеру (например, шаблоны из 3-6 символов)
     if p_len < len(sub_digits):
         for i in range(len(sub_digits) - p_len + 1):
             window = sub_digits[i : i + p_len]
             if match_pattern_on_window(window, clean_p):
                 return True
 
-    # Скользящее окно по 9-значному номеру
+    # скользящее окно по 9-значному номеру
     if p_len < len(nat_digits) and p_len > len(sub_digits):
         for i in range(len(nat_digits) - p_len + 1):
             window = nat_digits[i : i + p_len]
@@ -123,7 +123,7 @@ def match_pattern(phone_number: str, pattern: str) -> bool:
 
 def check_auto_rules(phone_number: str) -> Optional[Tuple[str, str]]:
     """
-    Автоматические базовые правила красоты.
+    автоматические базовые правила красоты.
     """
     digits = re.sub(r"\D", "", phone_number)
     if digits.startswith("998") and len(digits) == 12:
@@ -168,7 +168,7 @@ def check_number_match(
     check_auto: bool = True,
 ) -> MatchResult:
     """
-    Главная функция проверки номера по шаблонам и правилам.
+    главная функция проверки номера по шаблонам и правилам.
     """
     if enabled_patterns:
         for p in enabled_patterns:

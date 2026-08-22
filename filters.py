@@ -1,5 +1,6 @@
 """
-Pattern matching system for phone numbers based on letter-to-digit relations.
+Модуль фильтрации и проверки шаблонов номеров.
+Поддерживает точные цифры, буквы и смешанные комбинации.
 """
 
 from dataclasses import dataclass
@@ -14,50 +15,38 @@ class MatchResult:
     reason: str = ""
 
 
-PRESET_PATTERNS: List[str] = [
-    "XXX AA XX",
-    "XXX XX AA",
-    "XX AAA XX",
-    "XX AA XXX",
-    "AAA XX AA",
-    "AA XXX AA",
-    "XXX AA BB",
-    "XX AA BB",
-    "AA BB AA",
-    "XXX AAA",
-    "AAA AAA",
-    "AB AB AB",
-    "ABC ABC",
-    "ABCCBA",
-]
+# По умолчанию список предустановленных шаблонов пуст,
+# чтобы пользователь мог сам задавать нужные правила.
+PRESET_PATTERNS: List[str] = []
 
 
 def clean_pattern_str(pattern: str) -> str:
-    """Removes spaces, hyphens, and formats to uppercase."""
+    """Удаляет пробелы и дефисы, приводит к верхнему регистру."""
     return re.sub(r"[^A-Za-z0-9]", "", pattern).upper()
 
 
 def validate_pattern(pattern: str) -> bool:
     """
-    Validates user-submitted pattern string.
-    Must contain only letters, digits, spaces, hyphens, and be 3-12 characters long.
+    Проверяет корректность шаблона.
+    Может содержать буквы A-Z, цифры 0-9, пробелы и дефисы. Длина от 2 до 12 символов.
     """
     cleaned = clean_pattern_str(pattern)
-    if not (3 <= len(cleaned) <= 12):
+    if not (2 <= len(cleaned) <= 12):
         return False
     return bool(re.match(r"^[A-Z0-9\s\-]+$", pattern, re.IGNORECASE))
 
 
 def match_pattern_on_window(digits: str, clean_pattern: str) -> bool:
     """
-    Checks if a string of digits exactly matches a pattern of the same length.
-    - Upper-case letters (A-Z): same letters = same digits, different letters = different digits.
-    - Fixed digits (0-9): must match exact digit value.
+    Сравнивает цепочку цифр с очищенным шаблоном равной длины.
+    - Цифра в шаблоне должна точно совпадать с цифрой в номере.
+    - Одинаковые буквы обозначают одинаковые цифры.
+    - Разные буквы обозначают разные цифры.
     """
     if len(digits) != len(clean_pattern):
         return False
 
-    letter_to_digit: Dict[str, str] = {}
+    letter_map: Dict[str, str] = {}
     used_digits: Set[str] = set()
 
     for p_char, d_char in zip(clean_pattern, digits):
@@ -66,14 +55,13 @@ def match_pattern_on_window(digits: str, clean_pattern: str) -> bool:
                 return False
         elif p_char.isalpha():
             p_upper = p_char.upper()
-            if p_upper in letter_to_digit:
-                if letter_to_digit[p_upper] != d_char:
+            if p_upper in letter_map:
+                if letter_map[p_upper] != d_char:
                     return False
             else:
                 if d_char in used_digits:
-                    # Digit is already assigned to a different letter
                     return False
-                letter_to_digit[p_upper] = d_char
+                letter_map[p_upper] = d_char
                 used_digits.add(d_char)
         else:
             return False
@@ -83,8 +71,8 @@ def match_pattern_on_window(digits: str, clean_pattern: str) -> bool:
 
 def match_pattern(phone_number: str, pattern: str) -> bool:
     """
-    Matches pattern against subscriber part (7 digits) or national number (9 digits).
-    Supports sliding windows for shorter patterns.
+    Проверяет совпадение шаблона с номером телефона.
+    Учитывает 7-значный номер абонента и 9-значный номер с кодом оператора.
     """
     clean_p = clean_pattern_str(pattern)
     if not clean_p:
@@ -92,11 +80,11 @@ def match_pattern(phone_number: str, pattern: str) -> bool:
 
     digits = re.sub(r"\D", "", phone_number)
     if digits.startswith("998") and len(digits) == 12:
-        nat_digits = digits[3:]      # 9 digits
-        sub_digits = digits[5:]      # 7 digits
+        nat_digits = digits[3:]      # 9 цифр
+        sub_digits = digits[5:]      # 7 цифр
     elif len(digits) == 9:
-        nat_digits = digits          # 9 digits
-        sub_digits = digits[2:]      # 7 digits
+        nat_digits = digits
+        sub_digits = digits[2:]
     elif len(digits) == 7:
         nat_digits = digits
         sub_digits = digits
@@ -106,24 +94,24 @@ def match_pattern(phone_number: str, pattern: str) -> bool:
 
     p_len = len(clean_p)
 
-    # 1. Exact match on 7-digit subscriber number
+    # Точное совпадение с 7-значным номером
     if p_len == len(sub_digits):
         if match_pattern_on_window(sub_digits, clean_p):
             return True
 
-    # 2. Exact match on 9-digit national number
+    # Точное совпадение с 9-значным номером
     if p_len == len(nat_digits):
         if match_pattern_on_window(nat_digits, clean_p):
             return True
 
-    # 3. Sliding windows on subscriber part (7 digits)
+    # Скользящее окно по 7-значному номеру (например, шаблоны из 3-6 символов)
     if p_len < len(sub_digits):
         for i in range(len(sub_digits) - p_len + 1):
             window = sub_digits[i : i + p_len]
             if match_pattern_on_window(window, clean_p):
                 return True
 
-    # 4. Sliding windows on national digits (9 digits) if pattern is longer than 7
+    # Скользящее окно по 9-значному номеру
     if p_len < len(nat_digits) and p_len > len(sub_digits):
         for i in range(len(nat_digits) - p_len + 1):
             window = nat_digits[i : i + p_len]
@@ -135,13 +123,7 @@ def match_pattern(phone_number: str, pattern: str) -> bool:
 
 def check_auto_rules(phone_number: str) -> Optional[Tuple[str, str]]:
     """
-    Checks built-in automatic rules:
-    - 000, 777, 1111
-    - 4 identical digits (e.g. 8888)
-    - Ascending sequences (1234, 2345, 5678, etc.)
-    - Descending sequences (4321, 9876, etc.)
-    - Mirror combinations (palindromes)
-    - Repeating blocks (ABABAB, ABCABC)
+    Автоматические базовые правила красоты.
     """
     digits = re.sub(r"\D", "", phone_number)
     if digits.startswith("998") and len(digits) == 12:
@@ -151,7 +133,6 @@ def check_auto_rules(phone_number: str) -> Optional[Tuple[str, str]]:
     else:
         sub_digits = digits
 
-    # Specific fixed strings
     if "1111" in sub_digits:
         return ("1111", "содержит 1111")
     if "777" in sub_digits:
@@ -159,37 +140,24 @@ def check_auto_rules(phone_number: str) -> Optional[Tuple[str, str]]:
     if "000" in sub_digits:
         return ("000", "содержит 000")
 
-    # 4 identical digits
     for d in "0123456789":
         if d * 4 in sub_digits:
             return ("4_SAME", f"4 одинаковые цифры ({d * 4})")
 
-    # Ascending sequences
-    seqs = ["0123", "1234", "2345", "3456", "4567", "5678", "6789", "12345", "23456", "34567", "45678", "56789"]
+    seqs = ["0123", "1234", "2345", "3456", "4567", "5678", "6789"]
     for s in seqs:
         if s in sub_digits:
             return ("SEQ_ASC", f"последовательность ({s})")
 
-    # Descending sequences
-    rev_seqs = ["3210", "4321", "5432", "6543", "7654", "8765", "9876", "54321", "65432", "76543", "87654", "98765"]
+    rev_seqs = ["3210", "4321", "5432", "6543", "7654", "8765", "9876"]
     for rs in rev_seqs:
         if rs in sub_digits:
             return ("SEQ_DESC", f"обратная последовательность ({rs})")
 
-    # Mirror / Palindrome (length 6 or 7)
     if len(sub_digits) >= 6:
         tail6 = sub_digits[-6:]
         if tail6 == tail6[::-1] and len(set(tail6)) > 1:
             return ("MIRROR", f"зеркальная комбинация ({tail6})")
-        if len(sub_digits) == 7 and sub_digits == sub_digits[::-1] and len(set(sub_digits)) > 1:
-            return ("MIRROR", f"зеркальная комбинация ({sub_digits})")
-
-    # Repeating blocks
-    if len(sub_digits) >= 6:
-        if match_pattern_on_window(sub_digits[-6:], "ABABAB"):
-            return ("REPEAT_2", f"повторяющийся блок ABABAB ({sub_digits[-6:]})")
-        if match_pattern_on_window(sub_digits[-6:], "ABCABC"):
-            return ("REPEAT_3", f"повторяющийся блок ABCABC ({sub_digits[-6:]})")
 
     return None
 
@@ -200,8 +168,7 @@ def check_number_match(
     check_auto: bool = True,
 ) -> MatchResult:
     """
-    Checks if phone number matches any enabled patterns or automatic rules.
-    Returns MatchResult(matched=True/False, pattern=..., reason=...).
+    Главная функция проверки номера по шаблонам и правилам.
     """
     if enabled_patterns:
         for p in enabled_patterns:

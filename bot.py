@@ -1,6 +1,5 @@
 """
-Telegram bot for Ucell beautiful numbers monitoring (aiogram 3).
-Multi-user support enabled.
+Telegram-бот для круглосуточного мониторинга доступных номеров Ucell.
 """
 
 import asyncio
@@ -28,14 +27,12 @@ from filters import (
 )
 from database import Database
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Initialize database
 db = Database(config.DB_PATH)
 router = Router()
 
@@ -46,18 +43,24 @@ class AddPatternState(StatesGroup):
     waiting_for_pattern = State()
 
 
-# --- Keyboards ---
+class SetIntervalState(StatesGroup):
+    waiting_for_seconds = State()
 
-def get_main_menu_keyboard(is_monitoring: bool) -> InlineKeyboardMarkup:
+
+# --- Клавиатуры ---
+
+def get_main_menu_keyboard(is_monitoring: bool, check_interval: int) -> InlineKeyboardMarkup:
     status_icon = "🟢 Активен" if is_monitoring else "🔴 На паузе"
-    btn_text = f"📡 Мониторинг ({status_icon})"
     kb = [
-        [InlineKeyboardButton(text=btn_text, callback_data="toggle_monitoring")],
+        [InlineKeyboardButton(text=f"📡 Мониторинг ({status_icon})", callback_data="toggle_monitoring")],
         [
             InlineKeyboardButton(text="💎 Категории", callback_data="menu_categories"),
             InlineKeyboardButton(text="🎯 Шаблоны", callback_data="menu_patterns"),
         ],
-        [InlineKeyboardButton(text="📊 Статус", callback_data="menu_status")],
+        [
+            InlineKeyboardButton(text=f"⏱ Интервал ({check_interval}с)", callback_data="menu_interval"),
+            InlineKeyboardButton(text="📊 Статус", callback_data="menu_status"),
+        ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -91,7 +94,7 @@ def get_patterns_keyboard(
 
     kb.append([
         InlineKeyboardButton(text="➕ Добавить шаблон", callback_data="pat_add"),
-        InlineKeyboardButton(text="🗑 Мои шаблоны", callback_data="pat_my_list"),
+        InlineKeyboardButton(text="🗑 Очистить все", callback_data="pat_clear_all"),
     ])
     kb.append([
         InlineKeyboardButton(text="✅ Включить все", callback_data="pat_enable_all"),
@@ -101,14 +104,19 @@ def get_patterns_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-def get_my_patterns_keyboard(custom_patterns: List[str]) -> InlineKeyboardMarkup:
-    kb = []
-    for pat in custom_patterns:
-        kb.append([
-            InlineKeyboardButton(text=f"📌 {pat}", callback_data="ignore"),
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"pat_del_{pat}"),
-        ])
-    kb.append([InlineKeyboardButton(text="⬅️ Назад к шаблонам", callback_data="menu_patterns")])
+def get_interval_keyboard(current_interval: int) -> InlineKeyboardMarkup:
+    intervals = [30, 60, 120, 300, 600]
+    row = []
+    for sec in intervals:
+        mark = "✅ " if sec == current_interval else ""
+        text = f"{mark}{sec}с"
+        row.append(InlineKeyboardButton(text=text, callback_data=f"set_int_{sec}"))
+    
+    kb = [
+        row,
+        [InlineKeyboardButton(text="✍️ Ввести своё значение (сек)", callback_data="custom_int")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_main")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -117,16 +125,16 @@ def get_notification_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-# --- Command Handlers ---
+# --- Команды ---
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
     settings = await db.get_settings(user_id)
-    kb = get_main_menu_keyboard(settings["is_monitoring"])
+    kb = get_main_menu_keyboard(settings["is_monitoring"], settings["check_interval"])
     await message.answer(
-        "👋 **Вас приветствует бот мониторинга номеров Ucell!**\n\n"
-        "Выберите нужный раздел в меню ниже:",
+        "👋 **Мониторинг номеров Ucell**\n\n"
+        "Управляйте категориями, шаблонами и интервалом проверки с помощью меню ниже:",
         reply_markup=kb,
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -137,7 +145,7 @@ async def cmd_categories(message: Message):
     user_id = message.from_user.id
     settings = await db.get_settings(user_id)
     kb = get_categories_keyboard(settings["enabled_categories"])
-    await message.answer("💎 **Настройка категорий номеров:**", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    await message.answer("💎 **Категории номеров:**", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(Command("patterns"))
@@ -145,7 +153,7 @@ async def cmd_patterns(message: Message):
     user_id = message.from_user.id
     settings = await db.get_settings(user_id)
     kb = get_patterns_keyboard(settings["enabled_patterns"], settings["custom_patterns"])
-    await message.answer("🎯 **Настройка шаблонов красивых номеров:**", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    await message.answer("🎯 **Шаблоны номеров:**", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(Command("status"))
@@ -153,46 +161,42 @@ async def cmd_status(message: Message):
     user_id = message.from_user.id
     settings = await db.get_settings(user_id)
 
-    status_str = "🟢 Активен (24/7)" if settings["is_monitoring"] else "🔴 На паузе"
+    status_str = "🟢 Активен" if settings["is_monitoring"] else "🔴 На паузе"
     cat_count = len(settings["enabled_categories"])
     pat_count = len(settings["enabled_patterns"])
-    custom_count = len(settings["custom_patterns"])
 
     msg_text = (
         "📊 **Статус вашей системы:**\n\n"
         f"• **Мониторинг:** {status_str}\n"
-        f"• **Интервал проверки:** {config.CHECK_INTERVAL} сек.\n"
+        f"• **Интервал:** {settings['check_interval']} сек.\n"
         f"• **Включено категорий:** {cat_count} из {len(CATEGORIES)}\n"
-        f"• **Включено шаблонов:** {pat_count}\n"
-        f"• **Пользовательских шаблонов:** {custom_count}\n"
+        f"• **Активных шаблонов:** {pat_count}\n"
     )
     await message.answer(msg_text, parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(Command("pause"))
 async def cmd_pause(message: Message):
-    user_id = message.from_user.id
-    await db.set_monitoring_state(user_id, False)
-    await message.answer("⏸ Мониторинг временно приостановлен.")
+    await db.set_monitoring_state(message.from_user.id, False)
+    await message.answer("⏸ Мониторинг приостановлен.")
 
 
 @router.message(Command("resume"))
 async def cmd_resume(message: Message):
-    user_id = message.from_user.id
-    await db.set_monitoring_state(user_id, True)
+    await db.set_monitoring_state(message.from_user.id, True)
     await message.answer("▶️ Мониторинг возобновлён!")
 
 
-# --- Callback Query Handlers ---
+# --- Callback-обработчики ---
 
 @router.callback_query(F.data == "menu_main")
 async def cb_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
     settings = await db.get_settings(user_id)
-    kb = get_main_menu_keyboard(settings["is_monitoring"])
+    kb = get_main_menu_keyboard(settings["is_monitoring"], settings["check_interval"])
     await callback.message.edit_text(
-        "👋 **Главное меню мониторинга Ucell:**",
+        "👋 **Главное меню:**",
         reply_markup=kb,
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -206,7 +210,7 @@ async def cb_toggle_monitoring(callback: CallbackQuery):
     new_state = not settings["is_monitoring"]
     await db.set_monitoring_state(user_id, new_state)
 
-    kb = get_main_menu_keyboard(new_state)
+    kb = get_main_menu_keyboard(new_state, settings["check_interval"])
     await callback.message.edit_reply_markup(reply_markup=kb)
     status_text = "возобновлён 🟢" if new_state else "приостановлен 🔴"
     await callback.answer(f"Мониторинг {status_text}")
@@ -218,7 +222,7 @@ async def cb_menu_categories(callback: CallbackQuery):
     settings = await db.get_settings(user_id)
     kb = get_categories_keyboard(settings["enabled_categories"])
     await callback.message.edit_text(
-        "💎 **Настройка категорий номеров:**",
+        "💎 **Категории номеров:**",
         reply_markup=kb,
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -266,7 +270,8 @@ async def cb_menu_patterns(callback: CallbackQuery, state: FSMContext):
     settings = await db.get_settings(user_id)
     kb = get_patterns_keyboard(settings["enabled_patterns"], settings["custom_patterns"])
     await callback.message.edit_text(
-        "🎯 **Настройка шаблонов красивых номеров:**",
+        "🎯 **Шаблоны номеров:**\n"
+        "_Добавляйте свои шаблоны с буквами (XXX AA XX) и конкретными цифрами (777 AA XX, 555 12 34)._",
         reply_markup=kb,
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -309,16 +314,29 @@ async def cb_pat_disable_all(callback: CallbackQuery):
     await callback.answer("Все шаблоны отключены ❌")
 
 
+@router.callback_query(F.data == "pat_clear_all")
+async def cb_pat_clear_all(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    await db.clear_all_patterns(user_id)
+
+    settings = await db.get_settings(user_id)
+    kb = get_patterns_keyboard(settings["enabled_patterns"], settings["custom_patterns"])
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer("Список шаблонов очищен 🗑")
+
+
 @router.callback_query(F.data == "pat_add")
 async def cb_pat_add(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddPatternState.waiting_for_pattern)
     await callback.message.answer(
-        "✍️ **Введите ваш шаблон в чат:**\n\n"
-        "Например:\n"
-        "`XXX AA XX`\n"
-        "`AB AB AB`\n"
-        "`ABC ABC`\n\n"
-        "_Символы обозначают отношения между цифрами (одинаковые буквы = одинаковые цифры)._",
+        "✍️ **Отправьте шаблон в чат:**\n\n"
+        "Вы можете использовать как буквы, так и точные цифры:\n"
+        "• `XXX AA XX` (любые комбинации букв)\n"
+        "• `777 AA XX` (начинается на 777)\n"
+        "• `555 XX 55` (начинается и заканчивается на 555/55)\n"
+        "• `777 55 77` (точный фрагмент)\n"
+        "• `AB AB AB`\n\n"
+        "_Буквы задают связи (одинаковые буквы = одинаковые цифры), а цифры требуют точного совпадения._",
         parse_mode=ParseMode.MARKDOWN,
     )
     await callback.answer()
@@ -330,7 +348,7 @@ async def process_add_pattern(message: Message, state: FSMContext):
     if not validate_pattern(pattern_input):
         await message.answer(
             "❌ **Некорректный шаблон!**\n"
-            "Шаблон должен содержать от 3 до 12 символов (буквы A-Z, цифры, пробелы).\n"
+            "Шаблон должен содержать от 2 до 12 символов (буквы A-Z, цифры, пробелы).\n"
             "Попробуйте ещё раз:"
         )
         return
@@ -342,51 +360,69 @@ async def process_add_pattern(message: Message, state: FSMContext):
     settings = await db.get_settings(user_id)
     kb = get_patterns_keyboard(settings["enabled_patterns"], settings["custom_patterns"])
     await message.answer(
-        f"✅ Шаблон **{pattern_input}** успешно добавлен и включён!",
+        f"✅ Шаблон **{pattern_input}** добавлен и активирован!",
         reply_markup=kb,
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
-@router.callback_query(F.data == "pat_my_list")
-async def cb_pat_my_list(callback: CallbackQuery):
+# --- Настройка интервала ---
+
+@router.callback_query(F.data == "menu_interval")
+async def cb_menu_interval(callback: CallbackQuery):
     user_id = callback.from_user.id
     settings = await db.get_settings(user_id)
-    customs = settings["custom_patterns"]
-
-    if not customs:
-        await callback.answer("У вас пока нет пользовательских шаблонов.", show_alert=True)
-        return
-
-    kb = get_my_patterns_keyboard(customs)
+    kb = get_interval_keyboard(settings["check_interval"])
     await callback.message.edit_text(
-        "🗑 **Мои пользовательские шаблоны:**",
+        f"⏱ **Настройка интервала проверки:**\n\n"
+        f"Текущий интервал: **{settings['check_interval']} секунд**.\n"
+        "Выберите желаемый интервал из списка ниже или введите своё значение:",
         reply_markup=kb,
         parse_mode=ParseMode.MARKDOWN,
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("pat_del_"))
-async def cb_pat_delete(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("set_int_"))
+async def cb_set_int(callback: CallbackQuery):
     user_id = callback.from_user.id
-    pat = callback.data.replace("pat_del_", "")
-    await db.remove_custom_pattern(user_id, pat)
+    sec = int(callback.data.split("_")[-1])
+    await db.set_check_interval(user_id, sec)
+
+    kb = get_interval_keyboard(sec)
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer(f"Интервал установлен: {sec} сек.")
+
+
+@router.callback_query(F.data == "custom_int")
+async def cb_custom_int(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(SetIntervalState.waiting_for_seconds)
+    await callback.message.answer(
+        "⏱ **Введите интервал проверки в секундах (например: 45, 120, 300):**\n"
+        "_Минимальный интервал — 10 секунд._"
+    )
+    await callback.answer()
+
+
+@router.message(SetIntervalState.waiting_for_seconds)
+async def process_custom_int(message: Message, state: FSMContext):
+    text = message.text.strip()
+    if not text.isdigit() or int(text) < 10:
+        await message.answer("❌ Введите число секунд (не менее 10):")
+        return
+
+    sec = int(text)
+    user_id = message.from_user.id
+    await db.set_check_interval(user_id, sec)
+    await state.clear()
 
     settings = await db.get_settings(user_id)
-    customs = settings["custom_patterns"]
-    if customs:
-        kb = get_my_patterns_keyboard(customs)
-        await callback.message.edit_reply_markup(reply_markup=kb)
-    else:
-        kb = get_patterns_keyboard(settings["enabled_patterns"], customs)
-        await callback.message.edit_text(
-            "🎯 **Настройка шаблонов красивых номеров:**",
-            reply_markup=kb,
-            parse_mode=ParseMode.MARKDOWN,
-        )
-
-    await callback.answer(f"Шаблон {pat} удалён")
+    kb = get_main_menu_keyboard(settings["is_monitoring"], settings["check_interval"])
+    await message.answer(
+        f"✅ Интервал проверки сохранён: **{sec} сек.**",
+        reply_markup=kb,
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 @router.callback_query(F.data == "menu_status")
@@ -394,18 +430,16 @@ async def cb_menu_status(callback: CallbackQuery):
     user_id = callback.from_user.id
     settings = await db.get_settings(user_id)
 
-    status_str = "🟢 Активен (24/7)" if settings["is_monitoring"] else "🔴 На паузе"
+    status_str = "🟢 Активен" if settings["is_monitoring"] else "🔴 На паузе"
     cat_count = len(settings["enabled_categories"])
     pat_count = len(settings["enabled_patterns"])
-    custom_count = len(settings["custom_patterns"])
 
     msg_text = (
         "📊 **Статус вашей системы:**\n\n"
         f"• **Мониторинг:** {status_str}\n"
-        f"• **Интервал проверки:** {config.CHECK_INTERVAL} сек.\n"
+        f"• **Интервал:** {settings['check_interval']} сек.\n"
         f"• **Включено категорий:** {cat_count} из {len(CATEGORIES)}\n"
-        f"• **Включено шаблонов:** {pat_count}\n"
-        f"• **Пользовательских шаблонов:** {custom_count}\n"
+        f"• **Активных шаблонов:** {pat_count}\n"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_main")]
@@ -419,102 +453,104 @@ async def cb_ignore(callback: CallbackQuery):
     await callback.answer()
 
 
-# --- Background Monitoring Task ---
+# --- Фоновая задача мониторинга ---
 
 async def monitoring_task(bot: Bot):
-    """
-    Background worker that runs continuously every CHECK_INTERVAL seconds.
-    Fetches numbers from Ucell API and alerts active users based on their individual settings.
-    """
-    logger.info("Starting background monitoring task...")
+    logger.info("Запуск фоновой задачи мониторинга...")
     client = UcellClient()
+
+    # Отслеживание времени последней проверки для каждого пользователя
+    last_user_checks: Dict[int, float] = {}
 
     while True:
         try:
             active_users = await db.get_all_active_users()
-            if not active_users:
-                await asyncio.sleep(config.CHECK_INTERVAL)
-                continue
+            now = asyncio.get_event_loop().time()
 
-            # Aggregate all categories needed across all active users
-            all_needed_cats: Set[int] = set()
+            # Фильтруем пользователей, у которых подошло время проверки
+            due_users = []
             for user in active_users:
-                all_needed_cats.update(user.get("enabled_categories", []))
+                uid = user["user_id"]
+                interval = user.get("check_interval", 120)
+                last_time = last_user_checks.get(uid, 0)
+                if now - last_time >= interval:
+                    due_users.append(user)
 
-            if not all_needed_cats:
-                await asyncio.sleep(config.CHECK_INTERVAL)
-                continue
+            if due_users:
+                # Собираем все уникальные категории для запроса
+                all_needed_cats: Set[int] = set()
+                for user in due_users:
+                    all_needed_cats.update(user.get("enabled_categories", []))
 
-            # Fetch numbers grouped by category
-            fetched_by_cat: Dict[int, List[UcellNumber]] = {}
-            all_available_raw: Set[str] = set()
+                if all_needed_cats:
+                    fetched_by_cat: Dict[int, List[UcellNumber]] = {}
+                    all_available_raw: Set[str] = set()
 
-            for cat_id in all_needed_cats:
-                numbers = await client.fetch_numbers(category_id=cat_id, page_size=100)
-                fetched_by_cat[cat_id] = numbers
-                for num in numbers:
-                    all_available_raw.add(num.raw_number)
+                    for cat_id in all_needed_cats:
+                        numbers = await client.fetch_numbers(category_id=cat_id, page_size=100)
+                        fetched_by_cat[cat_id] = numbers
+                        for num in numbers:
+                            all_available_raw.add(num.raw_number)
 
-            # Update DB active status
-            await db.update_seen_numbers(all_available_raw)
+                    await db.update_seen_numbers(all_available_raw)
 
-            # Check matches per user
-            for user in active_users:
-                user_id = user["user_id"]
-                user_cats = set(user.get("enabled_categories", []))
-                user_pats = user.get("enabled_patterns", [])
+                    # Проверяем номера для каждого готового пользователя
+                    for user in due_users:
+                        user_id = user["user_id"]
+                        last_user_checks[user_id] = now
+                        user_cats = set(user.get("enabled_categories", []))
+                        user_pats = user.get("enabled_patterns", [])
 
-                if not user_cats or not user_pats:
-                    continue
+                        if not user_cats or not user_pats:
+                            continue
 
-                for cat_id in user_cats:
-                    for num in fetched_by_cat.get(cat_id, []):
-                        match_res: MatchResult = check_number_match(
-                            num.raw_number, enabled_patterns=user_pats, check_auto=True
-                        )
-
-                        if match_res.matched:
-                            if await db.should_notify(user_id, num.raw_number):
-                                notification_text = (
-                                    "🔥 **Найден красивый номер!**\n\n"
-                                    f"📱 `{num.formatted_number}`\n"
-                                    f"💎 **Категория:** {num.category_name}\n"
-                                    f"💰 **Цена:** {num.price_text}\n"
-                                    f"🎯 **Шаблон:** {match_res.reason}\n"
+                        for cat_id in user_cats:
+                            for num in fetched_by_cat.get(cat_id, []):
+                                match_res: MatchResult = check_number_match(
+                                    num.raw_number, enabled_patterns=user_pats, check_auto=True
                                 )
-                                try:
-                                    await bot.send_message(
-                                        chat_id=user_id,
-                                        text=notification_text,
-                                        reply_markup=get_notification_keyboard(),
-                                        parse_mode=ParseMode.MARKDOWN,
-                                    )
-                                    logger.info(f"Notified user {user_id} about number: {num.formatted_number}")
-                                    await db.record_notification(
-                                        user_id,
-                                        num.raw_number,
-                                        num.msisdn_id,
-                                        num.category_id,
-                                        num.formatted_number,
-                                        num.price_text,
-                                    )
-                                except Exception as send_err:
-                                    logger.error(f"Failed to send notification to user {user_id}: {send_err}")
+
+                                if match_res.matched:
+                                    if await db.should_notify(user_id, num.raw_number):
+                                        notification_text = (
+                                            "🔥 **Найден красивый номер!**\n\n"
+                                            f"📱 `{num.formatted_number}`\n"
+                                            f"💎 **Категория:** {num.category_name}\n"
+                                            f"💰 **Цена:** {num.price_text}\n"
+                                            f"🎯 **Шаблон:** {match_res.reason}\n"
+                                        )
+                                        try:
+                                            await bot.send_message(
+                                                chat_id=user_id,
+                                                text=notification_text,
+                                                reply_markup=get_notification_keyboard(),
+                                                parse_mode=ParseMode.MARKDOWN,
+                                            )
+                                            logger.info(f"Уведомление отправлено {user_id}: {num.formatted_number}")
+                                            await db.record_notification(
+                                                user_id,
+                                                num.raw_number,
+                                                num.msisdn_id,
+                                                num.category_id,
+                                                num.formatted_number,
+                                                num.price_text,
+                                            )
+                                        except Exception as send_err:
+                                            logger.error(f"Ошибка отправки пользователю {user_id}: {send_err}")
 
         except Exception as e:
-            logger.error(f"Error in background monitoring loop: {e}", exc_info=True)
+            logger.error(f"Ошибка в цикле мониторинга: {e}", exc_info=True)
 
-        await asyncio.sleep(config.CHECK_INTERVAL)
+        await asyncio.sleep(10)
 
 
-# --- Main entry point ---
+# --- Точка входа ---
 
 async def main():
     if not config.BOT_TOKEN:
-        logger.error("BOT_TOKEN is missing! Please set it in .env file.")
+        logger.error("BOT_TOKEN не задан в файле .env!")
         return
 
-    # Initialize DB
     await db.init_db()
 
     bot = Bot(token=config.BOT_TOKEN)
@@ -522,10 +558,9 @@ async def main():
 
     dp.include_router(router)
 
-    # Start background task
     asyncio.create_task(monitoring_task(bot))
 
-    logger.info("Bot starting polling for all users...")
+    logger.info("Бот успешно запущен!")
     await dp.start_polling(bot)
 
 

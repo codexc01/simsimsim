@@ -1,5 +1,6 @@
 """
-SQLite database module using aiosqlite for managing user preferences and seen numbers.
+Модуль асинхронного взаимодействия с SQLite.
+Хранение настроек пользователей, интервала проверки и отправленных номеров.
 """
 
 from datetime import datetime
@@ -14,19 +15,18 @@ DB_PATH = "bot_data.db"
 
 
 class Database:
-    """Async SQLite Database manager supporting multiple users."""
-
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
 
     async def init_db(self):
-        """Creates required tables if they don't exist."""
+        """Создание таблиц базы данных."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id INTEGER PRIMARY KEY,
                     is_monitoring INTEGER DEFAULT 1,
+                    check_interval INTEGER DEFAULT 120,
                     enabled_categories TEXT DEFAULT '[]',
                     enabled_patterns TEXT DEFAULT '[]',
                     custom_patterns TEXT DEFAULT '[]'
@@ -52,10 +52,10 @@ class Database:
             await db.commit()
 
     async def get_settings(self, user_id: int) -> Dict[str, Any]:
-        """Gets settings for a specific user, creating defaults if missing."""
+        """Получает настройки пользователя. Если их нет — создаёт дефолтные."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT is_monitoring, enabled_categories, enabled_patterns, custom_patterns FROM user_settings WHERE user_id = ?",
+                "SELECT is_monitoring, check_interval, enabled_categories, enabled_patterns, custom_patterns FROM user_settings WHERE user_id = ?",
                 (user_id,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -63,21 +63,28 @@ class Database:
                     return {
                         "user_id": user_id,
                         "is_monitoring": bool(row[0]),
-                        "enabled_categories": json.loads(row[1] or "[]"),
-                        "enabled_patterns": json.loads(row[2] or "[]"),
-                        "custom_patterns": json.loads(row[3] or "[]"),
+                        "check_interval": row[1] or 120,
+                        "enabled_categories": json.loads(row[2] or "[]"),
+                        "enabled_patterns": json.loads(row[3] or "[]"),
+                        "custom_patterns": json.loads(row[4] or "[]"),
                     }
 
-            # Create default settings if new user
+            # Настройки по умолчанию для нового пользователя (чистый список шаблонов)
             default_categories = [1, 111, 109, 108, 107, 106, 105, 104]
-            default_patterns = ["XXX AA XX", "AB AB AB", "ABC ABC", "ABCCBA"]
-            default_custom = []
+            default_interval = 120
+            default_patterns: List[str] = []
+            default_custom: List[str] = []
 
             await db.execute(
-                "INSERT OR REPLACE INTO user_settings (user_id, is_monitoring, enabled_categories, enabled_patterns, custom_patterns) VALUES (?, ?, ?, ?, ?)",
+                """
+                INSERT OR REPLACE INTO user_settings 
+                (user_id, is_monitoring, check_interval, enabled_categories, enabled_patterns, custom_patterns) 
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
                 (
                     user_id,
                     1,
+                    default_interval,
                     json.dumps(default_categories),
                     json.dumps(default_patterns),
                     json.dumps(default_custom),
@@ -88,16 +95,17 @@ class Database:
             return {
                 "user_id": user_id,
                 "is_monitoring": True,
+                "check_interval": default_interval,
                 "enabled_categories": default_categories,
                 "enabled_patterns": default_patterns,
                 "custom_patterns": default_custom,
             }
 
     async def get_all_active_users(self) -> List[Dict[str, Any]]:
-        """Returns list of settings for all users who have monitoring enabled."""
+        """Возвращает список всех активных пользователей с включённым мониторингом."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT user_id, is_monitoring, enabled_categories, enabled_patterns, custom_patterns FROM user_settings WHERE is_monitoring = 1"
+                "SELECT user_id, is_monitoring, check_interval, enabled_categories, enabled_patterns, custom_patterns FROM user_settings WHERE is_monitoring = 1"
             ) as cursor:
                 rows = await cursor.fetchall()
                 result = []
@@ -105,24 +113,26 @@ class Database:
                     result.append({
                         "user_id": row[0],
                         "is_monitoring": bool(row[1]),
-                        "enabled_categories": json.loads(row[2] or "[]"),
-                        "enabled_patterns": json.loads(row[3] or "[]"),
-                        "custom_patterns": json.loads(row[4] or "[]"),
+                        "check_interval": row[2] or 120,
+                        "enabled_categories": json.loads(row[3] or "[]"),
+                        "enabled_patterns": json.loads(row[4] or "[]"),
+                        "custom_patterns": json.loads(row[5] or "[]"),
                     })
                 return result
 
     async def save_settings(self, user_id: int, settings: Dict[str, Any]):
-        """Saves full user settings dictionary."""
+        """Сохраняет настройки пользователя."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO user_settings 
-                (user_id, is_monitoring, enabled_categories, enabled_patterns, custom_patterns)
-                VALUES (?, ?, ?, ?, ?)
+                (user_id, is_monitoring, check_interval, enabled_categories, enabled_patterns, custom_patterns)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
                     1 if settings.get("is_monitoring", True) else 0,
+                    settings.get("check_interval", 120),
                     json.dumps(settings.get("enabled_categories", [])),
                     json.dumps(settings.get("enabled_patterns", [])),
                     json.dumps(settings.get("custom_patterns", [])),
@@ -131,13 +141,17 @@ class Database:
             await db.commit()
 
     async def set_monitoring_state(self, user_id: int, is_active: bool):
-        """Enables or disables monitoring for user."""
         settings = await self.get_settings(user_id)
         settings["is_monitoring"] = is_active
         await self.save_settings(user_id, settings)
 
+    async def set_check_interval(self, user_id: int, interval_seconds: int):
+        """Устанавливает интервал проверки (в секундах)."""
+        settings = await self.get_settings(user_id)
+        settings["check_interval"] = max(10, interval_seconds)
+        await self.save_settings(user_id, settings)
+
     async def toggle_category(self, user_id: int, category_id: int) -> bool:
-        """Toggles category on/off. Returns new state (True = enabled)."""
         settings = await self.get_settings(user_id)
         cats: List[int] = settings.get("enabled_categories", [])
         if category_id in cats:
@@ -161,7 +175,6 @@ class Database:
         await self.save_settings(user_id, settings)
 
     async def toggle_pattern(self, user_id: int, pattern: str) -> bool:
-        """Toggles pattern on/off. Returns new state (True = enabled)."""
         settings = await self.get_settings(user_id)
         pats: List[str] = settings.get("enabled_patterns", [])
         if pattern in pats:
@@ -175,7 +188,6 @@ class Database:
         return enabled
 
     async def add_custom_pattern(self, user_id: int, pattern: str) -> bool:
-        """Adds custom pattern to custom_patterns and enables it."""
         settings = await self.get_settings(user_id)
         customs: List[str] = settings.get("custom_patterns", [])
         pats: List[str] = settings.get("enabled_patterns", [])
@@ -191,7 +203,6 @@ class Database:
         return True
 
     async def remove_custom_pattern(self, user_id: int, pattern: str) -> bool:
-        """Removes custom pattern."""
         settings = await self.get_settings(user_id)
         customs: List[str] = settings.get("custom_patterns", [])
         pats: List[str] = settings.get("enabled_patterns", [])
@@ -216,12 +227,14 @@ class Database:
         settings["enabled_patterns"] = []
         await self.save_settings(user_id, settings)
 
-    # --- Number tracking logic ---
+    async def clear_all_patterns(self, user_id: int):
+        """Полная очистка всех шаблонов пользователя."""
+        settings = await self.get_settings(user_id)
+        settings["custom_patterns"] = []
+        settings["enabled_patterns"] = []
+        await self.save_settings(user_id, settings)
 
     async def should_notify(self, user_id: int, raw_number: str) -> bool:
-        """
-        Determines if a notification should be sent for a user and raw_number.
-        """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT is_active FROM sent_numbers WHERE user_id = ? AND raw_number = ?",
@@ -241,7 +254,6 @@ class Database:
         formatted_number: str,
         price_text: str,
     ):
-        """Records or updates a number notification timestamp for a specific user."""
         now = datetime.now().isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -264,9 +276,6 @@ class Database:
             await db.commit()
 
     async def update_seen_numbers(self, currently_available_raw: Set[str]):
-        """
-        Updates last_seen_at for available numbers and marks disappeared numbers as inactive across all users.
-        """
         now = datetime.now().isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT DISTINCT raw_number FROM sent_numbers WHERE is_active = 1") as cursor:
